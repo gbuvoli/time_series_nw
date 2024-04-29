@@ -1,0 +1,1125 @@
+---
+title: "Curso de Visualización Científica - time_series"
+author: "G Buvoli - L Herrera"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: inline
+toc: true
+---
+
+### **Ejercicio para entregar**
+
+1.  Considere la serie de tiempo asociada con las acciones de [Tecnoglass](https://raw.githubusercontent.com/lihkir/Data/main/TGLS.csv) desde que comenzó a comercializarse hasta la fecha del día de hoy. Puede utilizar la **API** de `Yahoo Finance` para obtener esta serie de tiempo (ver [yahoofinancer](chrome-extension://efaidnbmnnnibpcajpcglclefindmkaj/https://cran.r-project.org/web/packages/yahoofinancer/yahoofinancer.pdf)).
+
+2.  Repita **TODOS** los pasos indicados en esta sección para encontrar modelos **ARIMA** para predecir el precio de las acciones de **Tecnoglass** con los siguientes horizontes: **7, 14 días, 21 días, 28 días**. Utilizar siempre predicciones usando *rolling* con ventana de predicción continua de un día. Cualquier cantidad de pasos extra para enriquecer su análisis predictivo serán aceptados siempre y cuando sean acordes con lo que indica la teoría de análisis de series de tiempo.
+
+3.  Repita el paso 2 ahora **sin utilizar rolling**. Esto es, realice el pronóstico solo utilizando `forecast()` para los diferentes horizontes de predicción, **7, 14 días, 21 días, 28 días**.
+
+4.  Realice tablas de error para los ítems 1 y 2, utilizando las métricas: `MAPE, MAE, RMSE, MSE, R2`. Además, agregue el gráfico de correlación entre la observación real y su predicción en el test, Corr(yt,y~t)Corr(��,�~�).
+
+5.  Repita el análisis desarrollado en los pasos anteriores, considerando ahora el criterio de **inferencia Bayesiana (BIC)** y el criterio de información de **Hannan--Quinn (HQIC)** para encontrar el mejor modelo **ARIMA** y, compare los errores con aquellos obtenidos con el criterio de **Akaike**.
+
+6.  Escriba en cada paso las **conclusiones** y **análisis estadísticos** asociados con los resultados obtenidos. Realice **tests de normalidad e independencia para los residuales** obtenidos para cada predicción, en cada caso agregue las correspondientes conclusiones. Figuras y algoritmos que no estén acompañados de una conclusión, descripción y análisis estadístico, no serán tenidas en cuenta.
+
+```{r echo=FALSE, warning=FALSE, eval=TRUE,include=FALSE}
+# Instalar paquetes si es necesario
+if (!require("quantmod")) install.packages("quantmod", repos = "http://cran.us.r-project.org")
+if (!require("plotly")) install.packages("plotly", repos = "http://cran.us.r-project.org")
+if (!require("TTR")) install.packages("TTR", repos = "http://cran.us.r-project.org")
+if (!require("tseries")) install.packages("tseries", repos = "http://cran.us.r-project.org")
+if (!require("DT", quietly = TRUE)) {install.packages("DT")}
+if (!require("forecast", quietly = TRUE)) {install.packages("forecast")}
+if (!require("TSstudio", quietly = TRUE)) {install.packages("TSstudio")}
+
+library(DT)
+library(quantmod)
+library(plotly)
+library(TTR)
+library(tseries)
+library(forecast)
+library(TSstudio)
+library(knitr)
+
+```
+
+## Capturando la información del TICKER TGLS (Tecnoglass)
+
+```{r}
+stock <- "TGLS"
+start_date <- as.Date("2014-04-01")
+end_date <- Sys.Date()
+
+getSymbols(stock, src = "yahoo", from = start_date, to = end_date)
+TGLS_data <- na.omit(get(stock))
+
+TGLS<- data.frame(Date = index(TGLS_data), TGLS_data)
+
+# Mostrar el marco de datos con las fechas usando datatable
+datatable(TGLS)
+```
+
+```{r}
+colnames(TGLS)
+```
+
+```{r}
+plot(TGLS$Date, TGLS$TGLS.Close, 
+     type = "l", 
+     main = "Serie de Tiempo de TGLS.Close",
+     ylab = "Precio de Cierre",
+     xlab = "Fecha")
+
+
+```
+
+```{r}
+hist(TGLS$TGLS.Close, main = "Histgram for Closing Price", xlab = "Freq", breaks = "Sturges", probability = TRUE)
+lines(density(TGLS$TGLS.Close))
+```
+
+| La mayor parte del tiempo de la serie, el precio de cierre del stock ha estado alrededor de los 10 USD
+
+```{r}
+library(ggplot2)
+library(lubridate)
+
+TGLS$Month <- factor(month(TGLS$Date), labels = month.abb)
+
+ggplot(TGLS, aes(x = Month, y = TGLS.Close)) +
+  geom_boxplot() +
+  labs(x = "Mes", y = "Precio de Cierre", title = "Boxplot de TGLS.Close por Mes")
+
+
+```
+
+| De esta figura no se logra identificar una estacionariedad mensual, en general los datos parecen tener mayor dispersión por encima de la mediana. El mes de abril es en el que se encuentran la mayoría de datos atípicos.
+
+### Probando Estacionariedad con prueba de Dickey-Fuller
+
+```{r}
+adf.test(Cl(TGLS_data$TGLS.Close), alternative = "stationary")
+
+```
+
+> A partir de lo anterior, como `P-value >0.05` podemos afirmar que esta serie de tiempo **No es Estacionaria**
+
+### Transformacion a serie estacionaria
+
+#### \* Usemos una diferenciación de primer orden:
+
+```{r}
+price_diff <- diff(TGLS$TGLS.Close, lag = 1)
+
+date_diff <- TGLS$Date[-1]
+
+# Graficar las diferencias
+plot(date_diff, price_diff, 
+     type = "l", 
+     main = "Diferencia en Precio de Cierre de TGLS.Close",
+     ylab = "Diferencia de Precio de Cierre",
+     xlab = "Fecha")
+
+```
+
+Realicemos una vez mas la prueba de Dickey Fuller para verificar si esta nueva serie es estacionaria
+
+```{r}
+# Realiza la prueba ADF ignorando los valores faltantes
+adf.test(na.omit(price_diff), alternative = "stationary")
+
+
+```
+
+Como el `P-valor` \< 0.05 entonces rechazamos la hipótesis nula, y aceptamos la hipótesis alternativa en la que la serie **Si es estacionaria**
+
+```{r}
+price_diff<-na.omit(price_diff)
+par(mfrow=c(1,2))
+acf(price_diff, lag.max = 20)
+pacf(price_diff, lag.max = 20)
+```
+
+| De estos graficos entendemos que una buena aproximación para los factores de diferenciación podrían ser AR(2) y diferenciación de nivel 1. (2,1,0)
+
+```{r}
+
+TGLS_Price <- arima(price_diff, order = c(2, 1, 0))
+summary(TGLS_Price)
+```
+
+```{r}
+checkresiduals(TGLS_Price)
+```
+
+Este modelo no resulta muy bueno, dado que no pasa la prueba de Normalidad ni de Indepencia, no podemos afirmar que los residuales son `ruido blanco`, es decir, todavía existe un componente de autocorrelación que no se logró capturar en el modelo.
+
+```{r}
+TGLS$Date <- as.Date(TGLS$Date)
+
+# Crear objeto ts
+ts <- ts(TGLS$TGLS.Close, start = c(2014,04,01), end= c(2024,04,12), frequency = 365)
+ts_info(ts)
+```
+
+```{r}
+ts_decompose(ts)
+```
+
+## MODELOS ARIMA - Minimizando AIC
+
+Vamos a encontrar ahora el mejor orden de los parámetros p,q,d con una función que minimiza el AIC
+
+```{r eval=FALSE}
+
+  best_aic <- Inf
+  best_pdq <- NULL
+  best_PDQ <- NULL
+  fit <- NULL
+  p_n<-3
+  d_n<-3
+  q_n<-2
+
+  for(p in 1:p_n) {
+    print(paste("Iniciando en p =", p))
+    for(d in 1:d_n) {
+       print(paste("iniciando en d= ", d))
+      for (q in 1:q_n) {
+           print(paste("iniciando en q=", q))
+        for(P in 1:p_n) {
+          for(D in 1:d_n) {
+            for (Q in 1:q_n) {
+              tryCatch({
+                fit <- arima(scale(ts), 
+                             order=c(p, d, q), 
+                             seasonal = list(order = c(P, D, Q), period = 12),
+                             xreg=1:length(ts), 
+                             method="CSS-ML")
+                tmp_aic <- AIC(fit)
+                if (tmp_aic < best_aic) {
+                  best_aic <- tmp_aic
+                  best_pdq = c(p, d, q)
+                  best_PDQ = c(P, D, Q)
+                }
+                print(best_aic)
+                print(best_pdq)
+              }, error=function(e){})
+            }
+          }
+        }
+      }
+    }
+  }
+    
+
+
+```
+
+```{r echo=FALSE}
+best_aic<- -6964.353
+best_pdq<-c(2,1,2)
+best_PDQ<-c(1,1,1)
+```
+
+```{r}
+best_aic
+best_pdq
+best_PDQ
+```
+
+Ahora reentrenamos el modelo usando los parámetros encontrados en el paso anterior:
+
+Capturamos y evaluamos los residuales:
+
+#### Funcion para evaluar residuales
+
+```{r}
+evaluar_residuales <- function(model, alpha = 0.05) {
+    # Prueba de normalidad (Shapiro-Wilk)
+    shapiro_test <- shapiro.test(model$residuals)
+    if (shapiro_test$p.value > alpha) {
+        resultado_normalidad <- "Los residuales se distribuyen normalmente"
+    } else {
+        resultado_normalidad <- "Los residuales no se distribuyen normalmente"
+    }
+    
+    # Prueba de independencia (Ljung-Box)
+    ljung <- Box.test(model$residuals, type = "Ljung-Box", lag = 20)
+    ljung_pvalues <- ljung$p.value
+    if (all(ljung_pvalues > alpha)) {
+        resultado_independencia <- "Los residuales son independientes"
+    } else {
+        resultado_independencia <- "Los residuales no son independientes"
+    }
+    
+    # Gráfico de residuos
+  checkresiduals(model)
+    
+    return(list(resultado_normalidad = resultado_normalidad, resultado_independencia = resultado_independencia))
+}
+
+```
+
+```{r}
+best_fit <- arima(scale(ts), 
+                             order=c(2,1,2), 
+                             seasonal = list(order = c(1,1,1), period = 12),
+                             xreg=1:length(ts), 
+                             method="CSS-ML")
+best_residuales<- residuals(best_fit)
+evaluar_residuales(best_fit,alpha = 0.05)
+```
+
+Aunque los residuales no se distribuyan normalmente, podemos confirmar que **son independientes** lo cual nos garantiza que el modelo esta capturando correctamente la correlación de la serie y el los residuales son **ruido**
+
+### Funciones
+
+#### Arima Rolling
+
+```{r}
+arima_rolling <- function(history, test, best_order) {
+    predictions <- vector()
+    residuals <- vector()
+
+    for (t in 1:length(test)) {
+        model <- arima(history, order = best_order)
+        model_fit <- forecast:::Arima(y = history, model = model, h = 1)
+        residuals <- residuals + model$residuals
+        output <- forecast:::forecast.Arima(model_fit, h = 1)
+        yhat <- output$mean[1]
+        predictions <- c(predictions, yhat)
+        obs <- test[t]
+        history <- c(history, obs)
+        cat(sprintf("predicted=%f, expected=%f\n", yhat, obs))
+    }
+
+    return(list(predictions = predictions, residuals = residuals))
+}
+```
+
+#### Arima sin Rolling
+
+```{r}
+arima_sin_rolling <- function(train, test, best_order) {
+    model <- arima(history, order = best_order)
+    predictions <- forecast::forecast(model, h = length(test))$mean
+    residuals <- residuals(model)
+    
+    return(list(predictions = predictions, model=model))
+}
+
+```
+
+#### Graficos de predicciones
+
+```{r}
+library(plotly)
+
+# Función para graficar predicciones de forma interactiva con plotly
+grafico_predicciones<- function(dates_train, train, dates_w, test_wl, yhat_w, window) {
+    # Crear el gráfico de líneas con plotly
+    p <- plot_ly() %>%
+      add_lines(x = dates_train, y = train, name = "Train", color = I("green")) %>%
+      add_lines(x = dates_w, y = test_wl, name = "Test", color = I("blue")) %>%
+      add_lines(x = dates_w, y = yhat_w, name = "Forecast", color = I("red")) %>%
+      layout(title = paste("Gráfico de Predicciones para Horizonte de", window, "Días"),
+             xaxis = list(title = "Fecha"),
+             yaxis = list(title = "Valor"),
+             legend = list(x = 0.9, y = 1)
+      )
+    
+    # Mostrar el gráfico
+    p
+}
+```
+
+#### Metricas  del modelo
+
+```{r}
+# Función para calcular las métricas
+metrics <- function(forecast, actual, str_name) {
+    mape <- mean(abs((forecast - actual) / actual))  # MAPE
+    mae <- mean(abs(forecast - actual))              # MAE
+    rmse <- sqrt(mean((forecast - actual)^2))         # RMSE
+    mse <- mean((forecast - actual)^2)                # MSE
+    r2 <- cor(forecast, actual)^2                     # R^2
+    
+    df_metrics <- data.frame(MAE = mae,
+                         MSE = mse,
+                         MAPE = mape,
+                         RMSE = rmse,
+                         R2 = r2,
+                         row.names = str_name)
+    
+    return(kable(df_metrics, caption = "Métricas de Predicción"))
+}
+```
+
+### Predicciones usando ARIMAS, métricas y gráficos
+
+#### Para ventana de 7 días
+
+```{r}
+n_BTC <- length(ts)
+n_test <- 7 
+train_size <- (n_BTC - n_test)
+
+cat("1. FRACCIONAMOS DATASET--------\n")
+
+# Se asume que la fecha de inicio ya está definida como start_date
+print(paste("La fecha inicial es: ", start_date))
+
+end_date <- start_date + (train_size - 1)
+print(paste("La fecha final es: ", end_date))
+
+train <- ts[1:train_size]
+print(paste("Train es: ",length (train)))
+
+test_w <- ts[train_size:(train_size + n_test-1)] 
+print(paste("Test es: ", length(test_w)))
+
+# Creamos la secuencia de fechas de entrenamiento y prueba
+dates_train <- seq(start_date, end_date, by = "days")
+print(paste("Fechas de entrenamiento:", length(dates_train)))
+
+start_date_test <- end_date + 1
+end_date_test <- start_date_test + n_test-1
+dates_test <- seq(start_date_test, end_date_test, by = "days")
+print(paste("Fechas de prueba:", length(dates_test)))
+```
+
+##### ARIMA CON ROLLING
+
+```{r}
+predictions <- vector()
+residuals <- vector()
+
+model <- arima(train, order = best_pdq)
+
+history<-train
+
+for (t in 1:length(test_w)) {
+    # Realizar el pronóstico para un paso adelante
+    model_fit <- forecast:::Arima(y = history, model = model, h = 1)
+    
+    # Actualizar los residuales
+    residuals <- c(residuals, model_fit$residuals)
+    
+    # Obtener la predicción
+    output <- forecast:::forecast.Arima(model_fit, h = 1)
+    yhat <- output$mean[1]
+    
+    # Almacenar la predicción
+    predictions <- c(predictions, yhat)
+    
+    # Avanzar al siguiente paso de tiempo
+    obs <- test_w[t]
+    history <- c(history, obs)  # Agregar el nuevo valor observado a history
+    history <- history[-1]  # Eliminar el primer valor de history para mantener su longitud constante
+    
+    # Imprimir la predicción y el valor esperado
+    cat(sprintf("predicted=%f, expected=%f\n", yhat, obs))
+}
+
+# Devolver las predicciones y los residuales en una lista
+evaluar_residuales(model_fit,alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"7_days")
+
+list(predictions = predictions)
+```
+
+\*\*Por favor hacer zoom en este gráfico para observar las predicciones \*\*
+
+##### ARIMA SIN ROLLING
+
+```{r}
+resultados <- arima_sin_rolling(train, test_w, best_pdq)
+predictions <- resultados$predictions
+modelo <- resultados$model
+
+evaluar_residuales(modelo, alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"7_days")
+```
+
+------------------------------------------------------------------------
+
+#### Para ventana de 14 días
+
+##### ARIMA CON ROLLING
+
+```{r}
+n_BTC <- length(ts)
+n_test <- 14 
+train_size <- (n_BTC - n_test)
+
+cat("1. FRACCIONAMOS DATASET--------\n")
+
+# Se asume que la fecha de inicio ya está definida como start_date
+print(paste("La fecha inicial es: ", start_date))
+
+end_date <- start_date + (train_size - 1)
+print(paste("La fecha final es: ", end_date))
+
+train <- ts[1:train_size]
+print(paste("Train es: ",length (train)))
+
+test_w <- ts[train_size:(train_size + n_test-1)] 
+print(paste("Test es: ", length(test_w)))
+
+# Creamos la secuencia de fechas de entrenamiento y prueba
+dates_train <- seq(start_date, end_date, by = "days")
+print(paste("Fechas de entrenamiento:", length(dates_train)))
+
+start_date_test <- end_date + 1
+end_date_test <- start_date_test + n_test-1
+dates_test <- seq(start_date_test, end_date_test, by = "days")
+print(paste("Fechas de prueba:", length(dates_test)))
+```
+
+```{r}
+predictions <- vector()
+residuals <- vector()
+
+model <- arima(train, order = best_pdq)
+
+history<-train
+
+for (t in 1:length(test_w)) {
+    # Realizar el pronóstico para un paso adelante
+    model_fit <- forecast:::Arima(y = history, model = model, h = 1)
+    
+    # Actualizar los residuales
+    residuals <- c(residuals, model_fit$residuals)
+    
+    # Obtener la predicción
+    output <- forecast:::forecast.Arima(model_fit, h = 1)
+    yhat <- output$mean[1]
+    
+    # Almacenar la predicción
+    predictions <- c(predictions, yhat)
+    
+    # Avanzar al siguiente paso de tiempo
+    obs <- test_w[t]
+    history <- c(history, obs)  # Agregar el nuevo valor observado a history
+    history <- history[-1]  # Eliminar el primer valor de history para mantener su longitud constante
+    
+    # Imprimir la predicción y el valor esperado
+    cat(sprintf("predicted=%f, expected=%f\n", yhat, obs))
+}
+
+# Devolver las predicciones y los residuales en una lista
+evaluar_residuales(model_fit,alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"14_days")
+
+list(predictions = predictions)
+```
+
+##### ARIMA SIN ROLLING
+
+```{r}
+resultados <- arima_sin_rolling(train, test_w, best_pdq)
+predictions <- resultados$predictions
+modelo <- resultados$model
+
+evaluar_residuales(modelo, alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"14_days")
+```
+
+#### Para la ventana de 21 días
+
+##### ARIMA CON ROLLING
+
+```{r}
+n_BTC <- length(ts)
+n_test <- 21 
+train_size <- (n_BTC - n_test)
+
+cat("1. FRACCIONAMOS DATASET--------\n")
+
+# Se asume que la fecha de inicio ya está definida como start_date
+print(paste("La fecha inicial es: ", start_date))
+
+end_date <- start_date + (train_size - 1)
+print(paste("La fecha final es: ", end_date))
+
+train <- ts[1:train_size]
+print(paste("Train es: ",length (train)))
+
+test_w <- ts[train_size:(train_size + n_test-1)] 
+print(paste("Test es: ", length(test_w)))
+
+# Creamos la secuencia de fechas de entrenamiento y prueba
+dates_train <- seq(start_date, end_date, by = "days")
+print(paste("Fechas de entrenamiento:", length(dates_train)))
+
+start_date_test <- end_date + 1
+end_date_test <- start_date_test + n_test-1
+dates_test <- seq(start_date_test, end_date_test, by = "days")
+print(paste("Fechas de prueba:", length(dates_test)))
+```
+
+```{r}
+predictions <- vector()
+residuals <- vector()
+
+model <- arima(train, order = best_pdq)
+
+history<-train
+
+for (t in 1:length(test_w)) {
+    # Realizar el pronóstico para un paso adelante
+    model_fit <- forecast:::Arima(y = history, model = model, h = 1)
+    
+    # Actualizar los residuales
+    residuals <- c(residuals, model_fit$residuals)
+    
+    # Obtener la predicción
+    output <- forecast:::forecast.Arima(model_fit, h = 1)
+    yhat <- output$mean[1]
+    
+    # Almacenar la predicción
+    predictions <- c(predictions, yhat)
+    
+    # Avanzar al siguiente paso de tiempo
+    obs <- test_w[t]
+    history <- c(history, obs)  # Agregar el nuevo valor observado a history
+    history <- history[-1]  # Eliminar el primer valor de history para mantener su longitud constante
+    
+    # Imprimir la predicción y el valor esperado
+    cat(sprintf("predicted=%f, expected=%f\n", yhat, obs))
+}
+
+# Devolver las predicciones y los residuales en una lista
+evaluar_residuales(model_fit,alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"21_days")
+
+list(predictions = predictions)
+```
+
+##### ARIMA SIN ROLLING
+
+```{r}
+resultados <- arima_sin_rolling(train, test_w, best_pdq)
+predictions <- resultados$predictions
+modelo <- resultados$model
+
+evaluar_residuales(modelo, alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"21_days")
+```
+
+#### Para la ventana de 28 días
+
+##### ARIMA CON ROLLING
+
+```{r}
+n_BTC <- length(ts)
+n_test <- 28 
+train_size <- (n_BTC - n_test)
+
+cat("1. FRACCIONAMOS DATASET--------\n")
+
+# Se asume que la fecha de inicio ya está definida como start_date
+print(paste("La fecha inicial es: ", start_date))
+
+end_date <- start_date + (train_size - 1)
+print(paste("La fecha final es: ", end_date))
+
+train <- ts[1:train_size]
+print(paste("Train es: ",length (train)))
+
+test_w <- ts[train_size:(train_size + n_test-1)] 
+print(paste("Test es: ", length(test_w)))
+
+# Creamos la secuencia de fechas de entrenamiento y prueba
+dates_train <- seq(start_date, end_date, by = "days")
+print(paste("Fechas de entrenamiento:", length(dates_train)))
+
+start_date_test <- end_date + 1
+end_date_test <- start_date_test + n_test-1
+dates_test <- seq(start_date_test, end_date_test, by = "days")
+print(paste("Fechas de prueba:", length(dates_test)))
+```
+
+```{r}
+predictions <- vector()
+residuals <- vector()
+
+model <- arima(train, order = best_pdq)
+
+history<-train
+
+for (t in 1:length(test_w)) {
+    # Realizar el pronóstico para un paso adelante
+    model_fit <- forecast:::Arima(y = history, model = model, h = 1)
+    
+    # Actualizar los residuales
+    residuals <- c(residuals, model_fit$residuals)
+    
+    # Obtener la predicción
+    output <- forecast:::forecast.Arima(model_fit, h = 1)
+    yhat <- output$mean[1]
+    
+    # Almacenar la predicción
+    predictions <- c(predictions, yhat)
+    
+    # Avanzar al siguiente paso de tiempo
+    obs <- test_w[t]
+    history <- c(history, obs)  # Agregar el nuevo valor observado a history
+    history <- history[-1]  # Eliminar el primer valor de history para mantener su longitud constante
+    
+    # Imprimir la predicción y el valor esperado
+    cat(sprintf("predicted=%f, expected=%f\n", yhat, obs))
+}
+
+# Devolver las predicciones y los residuales en una lista
+evaluar_residuales(model_fit,alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"28_days")
+
+list(predictions = predictions)
+```
+
+##### ARIMA SIN ROLLING 
+
+```{r}
+resultados <- arima_sin_rolling(train, test_w, best_pdq)
+predictions <- resultados$predictions
+modelo <- resultados$model
+
+evaluar_residuales(modelo, alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"28_days")
+```
+
+## MODELOS ARIMA - minimizando BIC
+
+En esta ocasión usaremos el criterio BIC para escoger los mejores parámetros "pqd" para entregar los modelos
+
+```{r eval=FALSE}
+
+  best_bic <- Inf
+  best_pdq <- NULL
+  best_PDQ <- NULL
+  fit <- NULL
+  p_n<-3
+  d_n<-3
+  q_n<-2
+
+  for(p in 1:p_n) {
+    print(paste("Iniciando en p =", p))
+    for(d in 1:d_n) {
+       print(paste("iniciando en d= ", d))
+      for (q in 1:q_n) {
+           print(paste("iniciando en q=", q))
+        for(P in 1:p_n) {
+          for(D in 1:d_n) {
+            for (Q in 1:q_n) {
+              tryCatch({
+                fit <- arima(scale(ts), 
+                             order=c(p, d, q), 
+                             seasonal = list(order = c(P, D, Q), period = 12),
+                             xreg=1:length(ts), 
+                             method="CSS-ML")
+                tmp_bic <- BIC(fit)
+                if (tmp_bic < best_bic) {
+                  best_bic <- tmp_bic
+                  best_pdq = c(p, d, q)
+                  best_PDQ = c(P, D, Q)
+                }
+                print(best_bic)
+                print(best_pdq)
+              }, error=function(e){})
+            }
+          }
+        }
+      }
+    }
+  }
+    
+```
+
+```{r echo=FALSE}
+best_bic<- -6918.607
+best_pdq<-c(1,1,1)
+best_PDQ<-c(1,1,2)
+```
+
+```{r}
+best_bic
+best_pdq
+best_PDQ
+```
+
+Ahora reentrenamos el modelo usando los parámetros encontrados en el paso anterior:
+
+Capturamos y evaluamos los residuales:
+
+```{r}
+best_fit <- arima(scale(ts), 
+                             order=c(2,1,2), 
+                             seasonal = list(order = c(1,1,1), period = 12),
+                             xreg=1:length(ts), 
+                             method="CSS-ML")
+best_residuales<- residuals(best_fit)
+evaluar_residuales(best_fit,alpha = 0.05)
+```
+
+### BIC: Predicciones usando ARIMAS, métricas y gráficos
+
+#### Para ventana de 7 días
+
+```{r}
+n_BTC <- length(ts)
+n_test <- 7 
+train_size <- (n_BTC - n_test)
+
+cat("1. FRACCIONAMOS DATASET--------\n")
+
+# Se asume que la fecha de inicio ya está definida como start_date
+print(paste("La fecha inicial es: ", start_date))
+
+end_date <- start_date + (train_size - 1)
+print(paste("La fecha final es: ", end_date))
+
+train <- ts[1:train_size]
+print(paste("Train es: ",length (train)))
+
+test_w <- ts[train_size:(train_size + n_test-1)] 
+print(paste("Test es: ", length(test_w)))
+
+# Creamos la secuencia de fechas de entrenamiento y prueba
+dates_train <- seq(start_date, end_date, by = "days")
+print(paste("Fechas de entrenamiento:", length(dates_train)))
+
+start_date_test <- end_date + 1
+end_date_test <- start_date_test + n_test-1
+dates_test <- seq(start_date_test, end_date_test, by = "days")
+print(paste("Fechas de prueba:", length(dates_test)))
+```
+
+##### ARIMA CON ROLLING
+
+```{r}
+predictions <- vector()
+residuals <- vector()
+
+model <- arima(train, order = best_pdq)
+
+history<-train
+
+for (t in 1:length(test_w)) {
+    # Realizar el pronóstico para un paso adelante
+    model_fit <- forecast:::Arima(y = history, model = model, h = 1)
+    
+    # Actualizar los residuales
+    residuals <- c(residuals, model_fit$residuals)
+    
+    # Obtener la predicción
+    output <- forecast:::forecast.Arima(model_fit, h = 1)
+    yhat <- output$mean[1]
+    
+    # Almacenar la predicción
+    predictions <- c(predictions, yhat)
+    
+    # Avanzar al siguiente paso de tiempo
+    obs <- test_w[t]
+    history <- c(history, obs)  # Agregar el nuevo valor observado a history
+    history <- history[-1]  # Eliminar el primer valor de history para mantener su longitud constante
+    
+    # Imprimir la predicción y el valor esperado
+    cat(sprintf("predicted=%f, expected=%f\n", yhat, obs))
+}
+
+# Devolver las predicciones y los residuales en una lista
+evaluar_residuales(model_fit,alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"7_days")
+
+list(predictions = predictions)
+```
+
+##### ARIMA SIN ROLLING
+
+```{r}
+resultados <- arima_sin_rolling(train, test_w, best_pdq)
+predictions <- resultados$predictions
+modelo <- resultados$model
+
+evaluar_residuales(modelo, alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"7_days")
+```
+
+#### Para la ventana de 14 días
+
+```{r}
+n_BTC <- length(ts)
+n_test <- 14 
+train_size <- (n_BTC - n_test)
+
+cat("1. FRACCIONAMOS DATASET--------\n")
+
+# Se asume que la fecha de inicio ya está definida como start_date
+print(paste("La fecha inicial es: ", start_date))
+
+end_date <- start_date + (train_size - 1)
+print(paste("La fecha final es: ", end_date))
+
+train <- ts[1:train_size]
+print(paste("Train es: ",length (train)))
+
+test_w <- ts[train_size:(train_size + n_test-1)] 
+print(paste("Test es: ", length(test_w)))
+
+# Creamos la secuencia de fechas de entrenamiento y prueba
+dates_train <- seq(start_date, end_date, by = "days")
+print(paste("Fechas de entrenamiento:", length(dates_train)))
+
+start_date_test <- end_date + 1
+end_date_test <- start_date_test + n_test-1
+dates_test <- seq(start_date_test, end_date_test, by = "days")
+print(paste("Fechas de prueba:", length(dates_test)))
+```
+
+##### ARIMA CON ROLLING
+
+```{r}
+predictions <- vector()
+residuals <- vector()
+
+model <- arima(train, order = best_pdq)
+
+history<-train
+
+for (t in 1:length(test_w)) {
+    # Realizar el pronóstico para un paso adelante
+    model_fit <- forecast:::Arima(y = history, model = model, h = 1)
+    
+    # Actualizar los residuales
+    residuals <- c(residuals, model_fit$residuals)
+    
+    # Obtener la predicción
+    output <- forecast:::forecast.Arima(model_fit, h = 1)
+    yhat <- output$mean[1]
+    
+    # Almacenar la predicción
+    predictions <- c(predictions, yhat)
+    
+    # Avanzar al siguiente paso de tiempo
+    obs <- test_w[t]
+    history <- c(history, obs)  # Agregar el nuevo valor observado a history
+    history <- history[-1]  # Eliminar el primer valor de history para mantener su longitud constante
+    
+    # Imprimir la predicción y el valor esperado
+    cat(sprintf("predicted=%f, expected=%f\n", yhat, obs))
+}
+
+# Devolver las predicciones y los residuales en una lista
+evaluar_residuales(model_fit,alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"14_days")
+
+list(predictions = predictions)
+```
+
+##### ARIMA SIN ROLLING
+
+```{r}
+resultados <- arima_sin_rolling(train, test_w, best_pdq)
+predictions <- resultados$predictions
+modelo <- resultados$model
+
+evaluar_residuales(modelo, alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"14_days")
+```
+
+#### Para la ventana de 21 días
+
+```{r}
+n_BTC <- length(ts)
+n_test <- 21
+train_size <- (n_BTC - n_test)
+
+cat("1. FRACCIONAMOS DATASET--------\n")
+
+# Se asume que la fecha de inicio ya está definida como start_date
+print(paste("La fecha inicial es: ", start_date))
+
+end_date <- start_date + (train_size - 1)
+print(paste("La fecha final es: ", end_date))
+
+train <- ts[1:train_size]
+print(paste("Train es: ",length (train)))
+
+test_w <- ts[train_size:(train_size + n_test-1)] 
+print(paste("Test es: ", length(test_w)))
+
+# Creamos la secuencia de fechas de entrenamiento y prueba
+dates_train <- seq(start_date, end_date, by = "days")
+print(paste("Fechas de entrenamiento:", length(dates_train)))
+
+start_date_test <- end_date + 1
+end_date_test <- start_date_test + n_test-1
+dates_test <- seq(start_date_test, end_date_test, by = "days")
+print(paste("Fechas de prueba:", length(dates_test)))
+```
+
+##### ARIMA CON ROLLING
+
+```{r}
+predictions <- vector()
+residuals <- vector()
+
+model <- arima(train, order = best_pdq)
+
+history<-train
+
+for (t in 1:length(test_w)) {
+    # Realizar el pronóstico para un paso adelante
+    model_fit <- forecast:::Arima(y = history, model = model, h = 1)
+    
+    # Actualizar los residuales
+    residuals <- c(residuals, model_fit$residuals)
+    
+    # Obtener la predicción
+    output <- forecast:::forecast.Arima(model_fit, h = 1)
+    yhat <- output$mean[1]
+    
+    # Almacenar la predicción
+    predictions <- c(predictions, yhat)
+    
+    # Avanzar al siguiente paso de tiempo
+    obs <- test_w[t]
+    history <- c(history, obs)  # Agregar el nuevo valor observado a history
+    history <- history[-1]  # Eliminar el primer valor de history para mantener su longitud constante
+    
+    # Imprimir la predicción y el valor esperado
+    cat(sprintf("predicted=%f, expected=%f\n", yhat, obs))
+}
+
+# Devolver las predicciones y los residuales en una lista
+evaluar_residuales(model_fit,alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"21_days")
+
+list(predictions = predictions)
+```
+
+##### ARIMA SIN ROLLING
+
+```{r}
+resultados <- arima_sin_rolling(train, test_w, best_pdq)
+predictions <- resultados$predictions
+modelo <- resultados$model
+
+evaluar_residuales(modelo, alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"21_days")
+```
+
+#### Para la ventana de 28 días
+
+```{r}
+n_BTC <- length(ts)
+n_test <- 28
+train_size <- (n_BTC - n_test)
+
+cat("1. FRACCIONAMOS DATASET--------\n")
+
+# Se asume que la fecha de inicio ya está definida como start_date
+print(paste("La fecha inicial es: ", start_date))
+
+end_date <- start_date + (train_size - 1)
+print(paste("La fecha final es: ", end_date))
+
+train <- ts[1:train_size]
+print(paste("Train es: ",length (train)))
+
+test_w <- ts[train_size:(train_size + n_test-1)] 
+print(paste("Test es: ", length(test_w)))
+
+# Creamos la secuencia de fechas de entrenamiento y prueba
+dates_train <- seq(start_date, end_date, by = "days")
+print(paste("Fechas de entrenamiento:", length(dates_train)))
+
+start_date_test <- end_date + 1
+end_date_test <- start_date_test + n_test-1
+dates_test <- seq(start_date_test, end_date_test, by = "days")
+print(paste("Fechas de prueba:", length(dates_test)))
+```
+
+##### ARIMA CON ROLLING
+
+```{r}
+predictions <- vector()
+residuals <- vector()
+
+model <- arima(train, order = best_pdq)
+
+history<-train
+
+for (t in 1:length(test_w)) {
+    # Realizar el pronóstico para un paso adelante
+    model_fit <- forecast:::Arima(y = history, model = model, h = 1)
+    
+    # Actualizar los residuales
+    residuals <- c(residuals, model_fit$residuals)
+    
+    # Obtener la predicción
+    output <- forecast:::forecast.Arima(model_fit, h = 1)
+    yhat <- output$mean[1]
+    
+    # Almacenar la predicción
+    predictions <- c(predictions, yhat)
+    
+    # Avanzar al siguiente paso de tiempo
+    obs <- test_w[t]
+    history <- c(history, obs)  # Agregar el nuevo valor observado a history
+    history <- history[-1]  # Eliminar el primer valor de history para mantener su longitud constante
+    
+    # Imprimir la predicción y el valor esperado
+    cat(sprintf("predicted=%f, expected=%f\n", yhat, obs))
+}
+
+# Devolver las predicciones y los residuales en una lista
+evaluar_residuales(model_fit,alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"28_days")
+
+list(predictions = predictions)
+```
+
+##### ARIMA SIN ROLLING
+
+```{r}
+resultados <- arima_sin_rolling(train, test_w, best_pdq)
+predictions <- resultados$predictions
+modelo <- resultados$model
+
+evaluar_residuales(modelo, alpha = 0.05)
+grafico_predicciones(dates_train,train,dates_test, test_w, predictions, n_test)
+metrics(predictions,test_w,"28_days")
+```
+
+## CONCLUSIONES
+
+1.  Para convertir la serie en Estacionaria, se requirió una diferenciación de primer orden.
+
+2.  Cuando usamos la funcion para **minimizar el AIC** los mejores parámetros pdq fueron 2,1,2 respectivamente, mientras que con el BIC, fueron1,1,1
+
+3.  Comparativamente las predicciones realizadas con \*\**Rolling Forecasting*\*\* resultaron mejores que las predicciones simples (sin rolling), ya que logran capturar mucho mejor las fluctuaciones de la seria a menor escala.
+
+    En cuanto a métricas, el MAPE es mejor en las predicciones **con rolling** para las ventanas de 14, 21 y 28 días, manteniendose constante alrededor del 13%
+
+    Mientras que en los modelos **sin rolling** las predicciones de la ventana de 7 días resultan mejores, pero a medida que la ventana de predicción aumenta, también lo hace el MAPE, llegando hasta un 40% de error en la ventana de los 28 días.
+
+4.  Si comparamos el criterio AIC vs BIC, para este caso particular, el BIC nos arroja mejores resultados, aunque, las diferencias son mínimas, entre 1%y 2%.
+
+5.  En cuanto a los residuos, todos los modelos realizados arrojan **independencia**, pero no se logra una distribución normal.
